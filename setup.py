@@ -1,34 +1,37 @@
-from setuptools import find_packages, setup
 import os
 from glob import glob
-package_name = 'ransac_seg'
+
+from setuptools import find_packages, setup
+
+package_name = "ransac_seg"
 
 setup(
     name=package_name,
-    version='1.0.0',
-    packages=find_packages(exclude=['test']),
+    version="1.0.0",
+    packages=find_packages(exclude=["test"]),
     data_files=[
-        ('share/ament_index/resource_index/packages',
-            ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml']),
-        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py'))
+        ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
+        ("share/" + package_name, ["package.xml"]),
+        (os.path.join("share", package_name, "launch"), glob("launch/*.launch.py")),
     ],
-    install_requires=['setuptools'],
+    install_requires=["setuptools"],
     zip_safe=True,
-    maintainer='altairzhambyl',
-    maintainer_email='altairzhambyl@gmail.com',
-    description='Road surface segmentation and lane boundary detection from LiDAR point clouds using ROS 2',
-    license='GPL-3.0',
-    tests_require=['pytest'],
+    maintainer="altairzhambyl",
+    maintainer_email="altairzhambyl@gmail.com",
+    description=(
+        "RANSAC ground-plane segmentation and lane boundary detection "
+        "from LiDAR point clouds using ROS 2"
+    ),
+    license="GPL-3.0",
+    tests_require=["pytest"],
     entry_points={
-    'console_scripts': [
-        'astar = ransac_seg.astar:main',
-        'dfs = ransac_seg.dfs:main',
-        'bfs = ransac_seg.bfs:main',
-        'curve = ransac_seg.curve:main',
-        'djikstra = ransac_seg.djikstra:main',
-        'ransac_node = ransac_seg.ransac_node:main',
-    ],
-},
-
+        "console_scripts": [
+            "astar = ransac_seg.astar:main",
+            "dfs = ransac_seg.dfs:main",
+            "bfs = ransac_seg.bfs:main",
+            "curve = ransac_seg.curve:main",
+            "djikstra = ransac_seg.djikstra:main",
+            "ransac_node = ransac_seg.ransac_node:main",
+        ],
+    },
 )

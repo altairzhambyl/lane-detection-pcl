@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
+from collections import deque
+
+import numpy as np
 import rclpy
+from geometry_msgs.msg import Point
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2
-from visualization_msgs.msg import Marker
 from sensor_msgs_py import point_cloud2
-import numpy as np
-from geometry_msgs.msg import Point
-from collections import deque
+from visualization_msgs.msg import Marker
+
+from ransac_seg.ground_plane import segment_ground
 
 
 def ros_to_numpy(msg):
@@ -23,10 +26,7 @@ class RoadSquares(Node):
 
         # Subscribe to LiDAR topic
         self.create_subscription(
-            PointCloud2,
-            "/sensor/lidar_front/points",
-            self.callback,
-            10
+            PointCloud2, "/sensor/lidar_front/points", self.callback, 10
         )
 
         # Publisher for semantic squares
@@ -44,8 +44,8 @@ class RoadSquares(Node):
         while q:
             cx, cy = q.popleft()
             # 4-neighbors (N,S,E,W). Use 8-neighbors if needed
-            for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
-                n = (cx+dx, cy+dy)
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                n = (cx + dx, cy + dy)
                 if n in grid and n not in visited:
                     visited.add(n)
                     q.append(n)
@@ -56,8 +56,14 @@ class RoadSquares(Node):
         if pts.shape[0] == 0:
             return
 
-        # Example: crude road filter (replace with your RANSAC classification)
-        road_pts = pts[pts[:,2] < 0.2]
+        # Segment the drivable surface with RANSAC plane fitting.
+        ground_mask, plane = segment_ground(pts)
+        if plane is None:
+            self.get_logger().warn(
+                "no ground plane found; using fixed-height fallback",
+                throttle_duration_sec=5.0,
+            )
+        road_pts = pts[ground_mask]
 
         # Quantize into grid cells
         grid = set()
@@ -70,7 +76,7 @@ class RoadSquares(Node):
             return
 
         # Root = closest grid cell to LiDAR (0,0)
-        root = min(grid, key=lambda g: g[0]**2 + g[1]**2)
+        root = min(grid, key=lambda g: g[0] ** 2 + g[1] ** 2)
 
         # BFS filter
         connected = self.bfs_connected(grid, root)

@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-import rclpy
-from rclpy.node import Node
-from sensor_msgs.msg import PointCloud2
-from visualization_msgs.msg import Marker
-from sensor_msgs_py import point_cloud2
-import numpy as np
-from geometry_msgs.msg import Point
 import heapq
 import math
+
+import numpy as np
+import rclpy
+from geometry_msgs.msg import Point
+from rclpy.node import Node
+from sensor_msgs.msg import PointCloud2
+from sensor_msgs_py import point_cloud2
+from visualization_msgs.msg import Marker
+
+from ransac_seg.ground_plane import segment_ground
 
 
 def ros_to_numpy(msg):
@@ -24,10 +27,7 @@ class RoadSquares(Node):
 
         # Subscribe to LiDAR topic
         self.create_subscription(
-            PointCloud2,
-            "/sensor/lidar_front/points",
-            self.callback,
-            10
+            PointCloud2, "/sensor/lidar_front/points", self.callback, 10
         )
 
         # Publisher for semantic squares
@@ -38,7 +38,7 @@ class RoadSquares(Node):
 
     def heuristic(self, a, b):
         """Euclidean distance heuristic."""
-        return math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2)
+        return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
 
     def a_star(self, grid, start, goal):
         """Return shortest path from start to goal using A*."""
@@ -61,8 +61,8 @@ class RoadSquares(Node):
                 return path
 
             cx, cy = current
-            for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
-                n = (cx+dx, cy+dy)
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                n = (cx + dx, cy + dy)
                 if n not in grid:
                     continue
                 tentative_g = g_score[current] + 1.0  # uniform step cost
@@ -79,8 +79,14 @@ class RoadSquares(Node):
         if pts.shape[0] == 0:
             return
 
-        # Example filter: keep "road-like" points (replace with RANSAC segmentation later)
-        road_pts = pts[pts[:,2] < 0.2]
+        # Segment the drivable surface with RANSAC plane fitting.
+        ground_mask, plane = segment_ground(pts)
+        if plane is None:
+            self.get_logger().warn(
+                "no ground plane found; using fixed-height fallback",
+                throttle_duration_sec=5.0,
+            )
+        road_pts = pts[ground_mask]
 
         # Quantize into grid cells
         grid = set()
@@ -93,10 +99,10 @@ class RoadSquares(Node):
             return
 
         # Start = closest grid cell to LiDAR (0,0)
-        start = min(grid, key=lambda g: g[0]**2 + g[1]**2)
+        start = min(grid, key=lambda g: g[0] ** 2 + g[1] ** 2)
 
         # Goal = furthest cell in the grid (demo, you can change)
-        goal = max(grid, key=lambda g: g[0]**2 + g[1]**2)
+        goal = max(grid, key=lambda g: g[0] ** 2 + g[1] ** 2)
 
         # Run A*
         path = self.a_star(grid, start, goal)

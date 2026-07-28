@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-import rclpy
-from rclpy.node import Node
-from rclpy.duration import Duration
-from sensor_msgs.msg import PointCloud2
-from visualization_msgs.msg import Marker
-from sensor_msgs_py import point_cloud2
 import numpy as np
+import rclpy
 from geometry_msgs.msg import Point
+from rclpy.duration import Duration
+from rclpy.node import Node
 from scipy.interpolate import UnivariateSpline
+from sensor_msgs.msg import PointCloud2
+from sensor_msgs_py import point_cloud2
+from visualization_msgs.msg import Marker
+
+from ransac_seg.ground_plane import segment_ground
 
 
 def ros_to_numpy(msg):
@@ -24,10 +26,7 @@ class RoadSquares(Node):
 
         # Subscribe to LiDAR raw topic
         self.create_subscription(
-            PointCloud2,
-            "/sensor/lidar_front/points",
-            self.callback,
-            10
+            PointCloud2, "/sensor/lidar_front/points", self.callback, 10
         )
 
         # Publishers: squares + left/right curves
@@ -40,8 +39,14 @@ class RoadSquares(Node):
         if pts.shape[0] == 0:
             return
 
-        # ✅ TODO: Apply your existing RANSAC road segmentation here
-        road_pts = pts[pts[:, 2] < 0.2]   # crude filter by z
+        # Segment the drivable surface with RANSAC plane fitting.
+        ground_mask, plane = segment_ground(pts)
+        if plane is None:
+            self.get_logger().warn(
+                "no ground plane found; using fixed-height fallback",
+                throttle_duration_sec=5.0,
+            )
+        road_pts = pts[ground_mask]
 
         if len(road_pts) < 30:
             return
@@ -93,7 +98,7 @@ class RoadSquares(Node):
         left_pts = []
         right_pts = []
         for xi in unique_x:
-            mask = (x.astype(int) == xi)
+            mask = x.astype(int) == xi
             yy = y[mask]
             if len(yy) > 0:
                 left_pts.append((xi, np.min(yy)))
@@ -115,8 +120,11 @@ class RoadSquares(Node):
             spline_left = UnivariateSpline(xs_left, ys_left, s=5)
             spline_right = UnivariateSpline(xs_right, ys_right, s=5)
 
-            xs = np.linspace(min(xs_left.min(), xs_right.min()),
-                             max(xs_left.max(), xs_right.max()), 200)
+            xs = np.linspace(
+                min(xs_left.min(), xs_right.min()),
+                max(xs_left.max(), xs_right.max()),
+                200,
+            )
 
             ys_left_smooth = spline_left(xs)
             ys_right_smooth = spline_right(xs)

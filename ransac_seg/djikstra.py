@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
+import heapq
+
+import numpy as np
 import rclpy
+from geometry_msgs.msg import Point
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2
-from visualization_msgs.msg import Marker
 from sensor_msgs_py import point_cloud2
-import numpy as np
-from geometry_msgs.msg import Point
-import heapq
+from visualization_msgs.msg import Marker
+
+from ransac_seg.ground_plane import segment_ground
 
 
 def ros_to_numpy(msg):
@@ -18,15 +21,12 @@ def ros_to_numpy(msg):
 
 
 class RoadSquares(Node):
-    def __init__(self): 
+    def __init__(self):
         super().__init__("road_squares_node")
 
         # Subscribe to LiDAR topic
         self.create_subscription(
-            PointCloud2,
-            "/sensor/lidar_front/points",
-            self.callback,
-            10
+            PointCloud2, "/sensor/lidar_front/points", self.callback, 10
         )
 
         # Publisher for semantic squares
@@ -48,8 +48,8 @@ class RoadSquares(Node):
             visited.add((cx, cy))
 
             # 4-neighbors
-            for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
-                n = (cx+dx, cy+dy)
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                n = (cx + dx, cy + dy)
                 if n in grid and n not in visited:
                     new_cost = cost + 1.0  # uniform weight (grid step = 1)
                     if n not in dist or new_cost < dist[n]:
@@ -63,8 +63,14 @@ class RoadSquares(Node):
         if pts.shape[0] == 0:
             return
 
-        # Example filter: keep "road-like" points (replace with RANSAC segmentation later)
-        road_pts = pts[pts[:,2] < 0.2]
+        # Segment the drivable surface with RANSAC plane fitting.
+        ground_mask, plane = segment_ground(pts)
+        if plane is None:
+            self.get_logger().warn(
+                "no ground plane found; using fixed-height fallback",
+                throttle_duration_sec=5.0,
+            )
+        road_pts = pts[ground_mask]
 
         # Quantize into grid cells
         grid = set()
@@ -77,7 +83,7 @@ class RoadSquares(Node):
             return
 
         # Root = closest grid cell to LiDAR (0,0)
-        root = min(grid, key=lambda g: g[0]**2 + g[1]**2)
+        root = min(grid, key=lambda g: g[0] ** 2 + g[1] ** 2)
 
         # Dijkstra filter
         connected = self.dijkstra_connected(grid, root)
@@ -95,7 +101,7 @@ class RoadSquares(Node):
         marker.scale.y = self.square_size
         marker.scale.z = 0.05
         marker.color.r = 0.2
-        marker.color.g = 0.9   # brighter green to differentiate from DFS
+        marker.color.g = 0.9  # brighter green to differentiate from DFS
         marker.color.b = 0.4
         marker.color.a = 0.7
 

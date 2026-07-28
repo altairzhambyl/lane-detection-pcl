@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
+import numpy as np
 import rclpy
+from geometry_msgs.msg import Point
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2
-from visualization_msgs.msg import Marker
 from sensor_msgs_py import point_cloud2
-import numpy as np
-from geometry_msgs.msg import Point
+from visualization_msgs.msg import Marker
+
+from ransac_seg.ground_plane import segment_ground
 
 
 def ros_to_numpy(msg):
@@ -22,10 +24,7 @@ class RoadSquares(Node):
 
         # Subscribe to LiDAR topic
         self.create_subscription(
-            PointCloud2,
-            "/sensor/lidar_front/points",
-            self.callback,
-            10
+            PointCloud2, "/sensor/lidar_front/points", self.callback, 10
         )
 
         # Publisher for semantic squares
@@ -43,8 +42,8 @@ class RoadSquares(Node):
         while stack:
             cx, cy = stack.pop()
             # 4-neighbors (use 8 for diagonals if needed)
-            for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
-                n = (cx+dx, cy+dy)
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                n = (cx + dx, cy + dy)
                 if n in grid and n not in visited:
                     visited.add(n)
                     stack.append(n)
@@ -55,8 +54,14 @@ class RoadSquares(Node):
         if pts.shape[0] == 0:
             return
 
-        # Example filter: keep "road-like" points (replace with RANSAC segmentation)
-        road_pts = pts[pts[:,2] < 0.2]
+        # Segment the drivable surface with RANSAC plane fitting.
+        ground_mask, plane = segment_ground(pts)
+        if plane is None:
+            self.get_logger().warn(
+                "no ground plane found; using fixed-height fallback",
+                throttle_duration_sec=5.0,
+            )
+        road_pts = pts[ground_mask]
 
         # Quantize into grid cells
         grid = set()
@@ -69,7 +74,7 @@ class RoadSquares(Node):
             return
 
         # Root = closest grid cell to LiDAR (0,0)
-        root = min(grid, key=lambda g: g[0]**2 + g[1]**2)
+        root = min(grid, key=lambda g: g[0] ** 2 + g[1] ** 2)
 
         # DFS filter
         connected = self.dfs_connected(grid, root)
@@ -87,7 +92,7 @@ class RoadSquares(Node):
         marker.scale.y = self.square_size
         marker.scale.z = 0.05
         marker.color.r = 0.0
-        marker.color.g = 0.5   # slightly darker green than BFS
+        marker.color.g = 0.5  # slightly darker green than BFS
         marker.color.b = 1.0
         marker.color.a = 0.6
 

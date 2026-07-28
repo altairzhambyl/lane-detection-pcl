@@ -1,5 +1,53 @@
 # Changelog
 
+## 2026-07-28 (later) — Sampling correction: the rosbag figures were measured on the pit lane
+
+**Situation**
+- The recorded-drive table said the pipeline planned a route on 281 of 300 frames. Running the
+  same pipeline live against the same bag, the planner nodes logged 482 "no traversable cell
+  within 2.0 m of the ego origin" against 113 successes — 81% failure where the benchmark claimed
+  6%.
+
+**Options**
+1. Trust the benchmark and treat the live nodes as misconfigured.
+2. Trust the live nodes and find what the benchmark did differently.
+
+**Decisions**
+- Took option 2 and found it: `bench_rosbag.py` read the *first* N messages of the bag. The
+  recording is 14 minutes; 300 frames is its opening 30 seconds, which is the pit lane — car
+  stationary, open asphalt, near field fully observed. `--stride` now samples across the whole
+  recording and defaults to 25.
+- Every figure the README quoted from this recording is re-measured and corrected in place, with
+  the superseded numbers left visible rather than silently replaced.
+
+**Reasoning**
+- Parameters, array shapes and code paths were all identical between benchmark and node; the only
+  difference was which part of the drive each one saw. A benchmark that samples the easiest
+  section of its input is not a benchmark, and this one was reporting a 3x better success rate
+  than the system actually achieves.
+
+**Outcomes** — 300 frames, every 25th sweep of the recording
+- Route planned on **98/300** frames, not 281/300. No start cell on **199/300**.
+- Median sweep **60 627** points, not 76 813; 16 clusters/frame, not 34.
+- Stage p50s: decode 0.6, segment 15.8, cluster 24.0, costmap 9.9, lane 30.5, plan 2.3 ms;
+  **sum 83.2 ms** inside the 100 ms budget, with plan p99 at 107.2 ms outside it.
+- Free-space carving re-measured over the whole drive: **0/200 routes -> 59/200**, not the
+  0/200 -> 200/200 the previous entry claimed from the opening frames. The fix is real and the
+  direction was right; the magnitude was an artefact of the sample.
+
+**Lessons**
+- "First N frames" is a sampling decision disguised as a convenience default, and it chose the
+  easiest part of the input. The live system disagreeing with the benchmark was the only reason
+  this surfaced; nothing in the test suite could have caught it.
+- Two measurements of the same quantity that differ by 13x are not a discrepancy to reconcile
+  later. That gap was the finding.
+
+**Next-step assumptions**
+- 66% of frames having no traversable cell at the ego origin is now the largest open defect,
+  larger than segmentation accuracy or the planner tail.
+- Whether raising `start_search_radius` or carving more aggressively is the right fix is not yet
+  measured; both are guesses until they are.
+
 ## 2026-07-28 — Real-data benchmarks: SemanticKITTI accuracy, rosbag latency, threshold refit
 
 **Situation**

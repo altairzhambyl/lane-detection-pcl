@@ -95,19 +95,29 @@ def plan_like_the_node(grid, start, goal_xy=(25.0, 0.0), axis=(1.0, 0.0)):
     return path, "fallback" if path else "none"
 
 
-def read_frames(bag_uri, topic, limit, storage_id="mcap"):
-    """Yield deserialised PointCloud2 messages from ``bag_uri``."""
+def read_frames(bag_uri, topic, limit, storage_id="mcap", stride=1):
+    """
+    Yield deserialised PointCloud2 messages from ``bag_uri``.
+
+    ``stride`` skips messages so a short run samples the whole recording
+    instead of its opening seconds. Reading the first N frames of a 14-minute
+    drive measured the pit lane and reported a route-success rate three times
+    the one the rest of the drive gives.
+    """
     reader = rosbag2_py.SequentialReader()
     reader.open(
         rosbag2_py.StorageOptions(uri=bag_uri, storage_id=storage_id),
         rosbag2_py.ConverterOptions("", ""),
     )
     reader.set_filter(rosbag2_py.StorageFilter(topics=[topic]))
-    count = 0
+    step = max(int(stride), 1)
+    seen = count = 0
     while reader.has_next() and count < limit:
         _, data, _ = reader.read_next()
-        yield deserialize_message(data, PointCloud2)
-        count += 1
+        if seen % step == 0:
+            yield deserialize_message(data, PointCloud2)
+            count += 1
+        seen += 1
 
 
 def main():
@@ -117,6 +127,12 @@ def main():
     parser.add_argument("--topic", default="/sensor/lidar_front/points")
     parser.add_argument("--frames", type=int, default=300)
     parser.add_argument("--storage-id", default="mcap")
+    parser.add_argument(
+        "--stride",
+        type=int,
+        default=25,
+        help="sample every Nth sweep, so a short run covers the whole recording",
+    )
     parser.add_argument("--max-range", type=float, default=60.0)
     args = parser.parse_args()
 
@@ -126,7 +142,9 @@ def main():
     frames = no_start = 0
     routes = defaultdict(int)
 
-    for msg in read_frames(args.bag_uri, args.topic, args.frames, args.storage_id):
+    for msg in read_frames(
+        args.bag_uri, args.topic, args.frames, args.storage_id, args.stride
+    ):
         points = timer.time("decode", pointcloud2_to_xyz, msg)
         point_counts.append(points.shape[0])
 

@@ -194,27 +194,38 @@ python3 tools/eval_semantickitti.py --root ~/datasets/semantickitti \
 
 ### Pipeline latency — recorded drive
 
-300 consecutive sweeps from a rosbag2 recording of the vehicle this package was
-written for: **76 813 points** per sweep, 66 249 after the 60 m range gate.
+300 sweeps sampled across a rosbag2 recording of the vehicle this package was
+written for — every 25th frame of a 14-minute drive, not the first 300.
+Median sweep: **60 627 points**, 44 446 after the 60 m range gate.
 
 | Stage | p50 | p95 | p99 | max |
 |---|---|---|---|---|
-| decode | 0.6 ms | 0.9 | 1.1 | 1.3 |
-| ground segmentation | 26.1 ms | 32.5 | 36.9 | 43.5 |
-| obstacle clustering | 32.0 ms | 37.6 | 41.5 | 49.3 |
-| costmap + inflation | 9.8 ms | 13.1 | 15.7 | 18.7 |
-| lane fit | 18.6 ms | 23.1 | 28.1 | 41.4 |
-| planning (A\*, Dijkstra fallback) | 6.5 ms | 87.3 | 99.0 | 117.9 |
-| **sum of p50** | **93.6 ms** | | | |
+| decode | 0.6 ms | 1.5 | 2.3 | 3.3 |
+| ground segmentation | 15.8 ms | 43.2 | 50.3 | 55.6 |
+| obstacle clustering | 24.0 ms | 51.0 | 60.2 | 65.2 |
+| costmap + inflation | 9.9 ms | 20.4 | 23.0 | 24.6 |
+| lane fit | 30.5 ms | 54.3 | 62.5 | 83.7 |
+| planning (A\*, Dijkstra fallback) | 2.3 ms | 24.4 | 107.2 | 140.7 |
+| **sum of p50** | **83.2 ms** | | | |
 
-A 10 Hz sensor allows 100 ms per sweep, so the median frame fits — but the
-planner's tail does not: its p95 is 87 ms on its own, because a frame whose
-requested goal is unreachable pays for a full Dijkstra field before falling
-back. Routes are produced on **281 of 300** frames (142 to the requested goal,
-139 via the fallback); 19 frames yield no start cell at all.
+A 10 Hz sensor allows 100 ms per sweep, so the median frame fits, and the
+planner's p99 does not.
+
+**The pipeline plans a route on 98 of those 300 frames, and finds no start cell
+at all on 199.** That is the honest figure for this recording and it is the
+package's largest open problem: the ego origin frequently has no traversable
+cell within `start_search_radius`, because the sweep's near field is barrier and
+kerb rather than surface. Free-space carving moved this from 0 routes in 200 to
+59 in 200 — decisive, but nowhere near solved.
+
+> An earlier revision of this table reported 281/300 routes and 76 813 points
+> per sweep. Those came from the *first* 300 frames of the recording — the pit
+> lane, where the car is stationary on open asphalt — and were not
+> representative of the drive. `--stride` now defaults to sampling across the
+> whole bag. The correction is kept visible rather than quietly overwritten.
 
 ```bash
-python3 tools/bench_rosbag.py path/to/recording.mcap --frames 300
+python3 tools/bench_rosbag.py path/to/recording.mcap --frames 300 --stride 25
 ```
 
 There are no accuracy numbers for this recording. It carries no ground-truth

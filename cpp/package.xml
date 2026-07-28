@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>ransac_seg_cpp</name>
+  <version>0.1.0</version>
+  <description>
+    C++ port of the ransac_seg per-sweep hot path. The Python package stays the
+    reference implementation; this one carries the work that has to fit inside a
+    10 Hz budget.
+  </description>
+  <maintainer email="altairzhambyl@gmail.com">altairzhambyl</maintainer>
+  <license>GPL-3.0-only</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>eigen</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

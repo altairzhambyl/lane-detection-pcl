@@ -1,143 +1,179 @@
 #!/usr/bin/env python3
-import heapq
-import math
+"""
+A* planner node: one least-cost route across the frame's costmap.
+
+The previous version searched a bare set of cells holding ground returns,
+started from "whichever cell was nearest the origin this frame" and aimed at
+"whichever cell was furthest away this frame", so the goal jumped every time
+the sweep changed shape. It also used a Euclidean heuristic on a 4-connected
+graph and had no CLOSED set, so it re-expanded cells it had already settled.
+
+Now the start is the ego origin, the goal is a parameter in metres snapped
+onto the map, and the search runs over the tri-state costmap so obstacles are
+obstacles rather than holes in the ground returns.
+"""
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import Point
-from rclpy.node import Node
-from sensor_msgs.msg import PointCloud2
-from sensor_msgs_py import point_cloud2
 from visualization_msgs.msg import Marker
 
-from ransac_seg.ground_plane import segment_ground
+from ransac_seg.grid import snap_to_traversable
+from ransac_seg.markers import delete_all, line_strip
+from ransac_seg.params import declare
+from ransac_seg.perception_node import PerceptionNode
+from ransac_seg.planners import (
+    astar,
+    dijkstra,
+    furthest_reachable,
+    path_cost,
+    path_length_m,
+    select_goal,
+    validate_connectivity,
+)
+
+MARKER_NS = "astar_path"
+PATH_COLOR = (1.0, 0.25, 0.2, 0.95)
 
 
-def ros_to_numpy(msg):
-    """Convert ROS PointCloud2 to numpy array [N,3]."""
-    points = []
-    for p in point_cloud2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True):
-        points.append([p[0], p[1], p[2]])
-    return np.array(points)
+class AStarPlanner(PerceptionNode):
+    """Plans and publishes a single least-cost route to a parameterised goal."""
 
+    needs_costmap = True
 
-class RoadSquares(Node):
     def __init__(self):
-        super().__init__("road_squares_node")
-
-        # Subscribe to LiDAR topic
-        self.create_subscription(
-            PointCloud2, "/sensor/lidar_front/points", self.callback, 10
+        """Declare the planner tunables and create the path publisher."""
+        super().__init__(
+            "astar_planner_node", default_marker_topic="/planning/astar_path"
+        )
+        self.goal_x = float(declare(self, "goal_x", 25.0, "Goal x in the sensor frame"))
+        self.goal_y = float(declare(self, "goal_y", 0.0, "Goal y in the sensor frame"))
+        self.goal_search_radius = float(
+            declare(
+                self,
+                "goal_search_radius",
+                5.0,
+                "Radius in metres searched for a traversable cell near the goal",
+            )
+        )
+        self.start_search_radius = float(
+            declare(
+                self,
+                "start_search_radius",
+                2.0,
+                "Radius in metres searched for a traversable cell at the ego origin",
+            )
+        )
+        self.connectivity = int(
+            declare(self, "connectivity", 8, "Grid neighbourhood: 4 or 8")
+        )
+        # Fail here rather than raising out of every callback: a bad
+        # launch value should stop the node, not flood the log.
+        validate_connectivity(self.connectivity)
+        self.path_width = float(
+            declare(self, "path_width", 0.15, "Published path line width in metres")
+        )
+        # Which way "onwards" points when the requested goal is unusable. It is
+        # +x for a forward-facing sensor, but a rear or side mount needs its own.
+        self.fallback_axis = tuple(
+            float(v)
+            for v in declare(
+                self,
+                "goal_fallback_axis",
+                [1.0, 0.0],
+                "Direction the fallback goal is chosen furthest along",
+            )
+        )
+        self.publisher = self.create_publisher(
+            Marker, self.params.marker_topic, self.params.qos_depth
         )
 
-        # Publisher for semantic squares
-        self.pub = self.create_publisher(Marker, "/semantic_map/squares", 10)
+    def _clear(self, frame):
+        """Publish a marker that erases the previous frame's path."""
+        self.publisher.publish(delete_all(frame.frame_id, frame.stamp, MARKER_NS))
 
-        self.square_size = 0.5
-        self.half_size = self.square_size / 2.0
+    def on_frame(self, frame):
+        """Plan from the ego origin to the goal and publish the route."""
+        grid = frame.grid
+        if grid is None:
+            self._clear(frame)
+            return
 
-    def heuristic(self, a, b):
-        """Euclidean distance heuristic."""
-        return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
+        start = snap_to_traversable(grid, 0.0, 0.0, self.start_search_radius)
+        if start is None:
+            self.get_logger().warn(
+                "no traversable cell within "
+                f"{self.start_search_radius:.1f} m of the ego origin; not planning",
+                throttle_duration_sec=1.0,
+            )
+            self._clear(frame)
+            return
 
-    def a_star(self, grid, start, goal):
-        """Return shortest path from start to goal using A*."""
-        open_set = []
-        heapq.heappush(open_set, (0, start))
-        came_from = {}
-        g_score = {start: 0.0}
+        path = self._plan(grid, start)
+        if not path:
+            self.get_logger().warn(
+                "no route to any goal in this frame", throttle_duration_sec=1.0
+            )
+            self._clear(frame)
+            return
 
-        while open_set:
-            _, current = heapq.heappop(open_set)
+        self.publisher.publish(
+            line_strip(
+                frame.frame_id,
+                frame.stamp,
+                MARKER_NS,
+                0,
+                grid.cell_to_world_xyz(np.asarray(path, dtype=np.int64)),
+                PATH_COLOR,
+                width=self.path_width,
+                lifetime_sec=self.params.marker_lifetime_sec,
+            )
+        )
+        self.get_logger().info(
+            f"path cost={path_cost(grid, path):.1f} "
+            f"length={path_length_m(grid, path):.1f} m over {len(path)} cells",
+            throttle_duration_sec=1.0,
+        )
 
-            if current == goal:
-                # reconstruct path
-                path = []
-                while current in came_from:
-                    path.append(current)
-                    current = came_from[current]
-                path.append(start)
-                path.reverse()
+    def _plan(self, grid, start):
+        """Return the cell route to the requested goal, or to a reachable one."""
+        axis = self.fallback_axis
+        goal = select_goal(
+            grid,
+            (self.goal_x, self.goal_y),
+            search_radius=self.goal_search_radius,
+            fallback_axis=axis,
+        )
+        if goal is not None:
+            path, _ = astar(grid, start, goal, connectivity=self.connectivity)
+            if path:
                 return path
 
-            cx, cy = current
-            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                n = (cx + dx, cy + dy)
-                if n not in grid:
-                    continue
-                tentative_g = g_score[current] + 1.0  # uniform step cost
-                if n not in g_score or tentative_g < g_score[n]:
-                    g_score[n] = tentative_g
-                    f_score = tentative_g + self.heuristic(n, goal)
-                    heapq.heappush(open_set, (f_score, n))
-                    came_from[n] = current
+        # The requested goal is either off the map or walled off from the ego
+        # position. Rather than publish nothing, aim at the furthest cell that
+        # is provably connected to the start — the Dijkstra field is what
+        # makes "provably" true and keeps the choice stable between frames.
+        cost_field, _ = dijkstra(grid, start, connectivity=self.connectivity)
+        fallback = furthest_reachable(cost_field, grid, axis)
+        if fallback is None or fallback == start:
+            return []
+        path, _ = astar(grid, start, fallback, connectivity=self.connectivity)
+        return path
 
-        return []  # no path found
 
-    def callback(self, msg: PointCloud2):
-        pts = ros_to_numpy(msg)
-        if pts.shape[0] == 0:
-            return
-
-        # Segment the drivable surface with RANSAC plane fitting.
-        ground_mask, plane = segment_ground(pts)
-        if plane is None:
-            self.get_logger().warn(
-                "no ground plane found; using fixed-height fallback",
-                throttle_duration_sec=5.0,
-            )
-        road_pts = pts[ground_mask]
-
-        # Quantize into grid cells
-        grid = set()
-        for x, y, _ in road_pts:
-            gx = int(x // self.square_size)
-            gy = int(y // self.square_size)
-            grid.add((gx, gy))
-
-        if not grid:
-            return
-
-        # Start = closest grid cell to LiDAR (0,0)
-        start = min(grid, key=lambda g: g[0] ** 2 + g[1] ** 2)
-
-        # Goal = furthest cell in the grid (demo, you can change)
-        goal = max(grid, key=lambda g: g[0] ** 2 + g[1] ** 2)
-
-        # Run A*
-        path = self.a_star(grid, start, goal)
-
-        # Build visualization marker (show path only)
-        marker = Marker()
-        marker.header.frame_id = msg.header.frame_id
-        marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = "astar_node"
-        marker.id = 0
-        marker.type = Marker.LINE_STRIP
-        marker.action = Marker.ADD
-
-        marker.scale.x = 0.1  # line thickness
-        marker.color.r = 1.0
-        marker.color.g = 0.2
-        marker.color.b = 0.2
-        marker.color.a = 0.9
-
-        for gx, gy in path:
-            p = Point()
-            p.x = gx * self.square_size + self.half_size
-            p.y = gy * self.square_size + self.half_size
-            p.z = 0.0
-            marker.points.append(p)
-
-        self.pub.publish(marker)
+# The launch files and the end-to-end tests have referred to every node in this
+# package as RoadSquares since the first commit; the alias keeps that working.
+RoadSquares = AStarPlanner
 
 
 def main(args=None):
+    """Spin the A* planner node."""
     rclpy.init(args=args)
-    node = RoadSquares()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    node = AStarPlanner()
+    try:
+        rclpy.spin(node)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":

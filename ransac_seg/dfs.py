@@ -1,117 +1,153 @@
 #!/usr/bin/env python3
+"""
+DFS node: a traversal-order baseline, and explicitly not a planner.
+
+Say this plainly, because the repository used to imply otherwise by shipping
+DFS alongside A* as if they were alternatives: depth-first search explores the
+exact same reachable set as breadth-first search. Connectivity is a property of
+the graph, not of the order you walk it, so DFS finds nothing BFS misses and
+misses nothing BFS finds. It produces no shortest path, no hop distance and no
+cost. Nobody should drive behind it.
+
+What it does produce, and the only thing that differs from BFS, is the order of
+discovery — a long snaking chain instead of expanding rings — which is worth
+seeing once because it is the clearest picture of why "reachable" and "optimal"
+are different questions. To keep that claim honest rather than decorative, this
+node re-runs BFS on the same grid every second and logs whether the two visited
+sets actually match, so the assertion is measured on live data instead of
+asserted in a README.
+"""
+
 import numpy as np
 import rclpy
-from geometry_msgs.msg import Point
-from rclpy.node import Node
-from sensor_msgs.msg import PointCloud2
-from sensor_msgs_py import point_cloud2
-from visualization_msgs.msg import Marker
+from visualization_msgs.msg import MarkerArray
 
-from ransac_seg.ground_plane import segment_ground
+from ransac_seg.grid import snap_to_traversable
+from ransac_seg.markers import cube_list, delete_all
+from ransac_seg.params import declare
+from ransac_seg.perception_node import PerceptionNode
+from ransac_seg.planners import (
+    band_color,
+    bfs,
+    dfs,
+    normalised_bands,
+    validate_connectivity,
+)
+
+MARKER_NS = "dfs_order"
 
 
-def ros_to_numpy(msg):
-    """Convert ROS PointCloud2 to numpy array [N,3]."""
-    points = []
-    for p in point_cloud2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True):
-        points.append([p[0], p[1], p[2]])
-    return np.array(points)
+class DFSBaseline(PerceptionNode):
+    """Publishes depth-first discovery order and audits it against BFS."""
 
+    needs_costmap = True
 
-class RoadSquares(Node):
     def __init__(self):
-        super().__init__("road_squares_node")
-
-        # Subscribe to LiDAR topic
-        self.create_subscription(
-            PointCloud2, "/sensor/lidar_front/points", self.callback, 10
+        """Declare the field tunables and create the marker publisher."""
+        super().__init__(
+            "dfs_baseline_node", default_marker_topic="/planning/dfs_order"
+        )
+        self.start_search_radius = float(
+            declare(
+                self,
+                "start_search_radius",
+                2.0,
+                "Radius in metres searched for a traversable cell at the ego origin",
+            )
+        )
+        self.connectivity = int(
+            declare(self, "connectivity", 4, "Grid neighbourhood: 4 or 8")
+        )
+        # Fail here rather than raising out of every callback: a bad
+        # launch value should stop the node, not flood the log.
+        validate_connectivity(self.connectivity)
+        self.field_bands = int(
+            declare(
+                self, "field_bands", 6, "Colour levels the published field is cut into"
+            )
+        )
+        self.publisher = self.create_publisher(
+            MarkerArray, self.params.marker_topic, self.params.qos_depth
         )
 
-        # Publisher for semantic squares
-        self.pub = self.create_publisher(Marker, "/semantic_map/squares", 10)
+    def _clear(self, frame):
+        """Publish an array that erases the previous frame's field."""
+        array = MarkerArray()
+        array.markers.append(delete_all(frame.frame_id, frame.stamp, MARKER_NS))
+        self.publisher.publish(array)
 
-        self.square_size = 0.5
-        self.half_size = self.square_size / 2.0
-
-    def dfs_connected(self, grid, root):
-        """Return connected set of squares starting from root using DFS."""
-        visited = set()
-        stack = [root]
-        visited.add(root)
-
-        while stack:
-            cx, cy = stack.pop()
-            # 4-neighbors (use 8 for diagonals if needed)
-            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                n = (cx + dx, cy + dy)
-                if n in grid and n not in visited:
-                    visited.add(n)
-                    stack.append(n)
-        return visited
-
-    def callback(self, msg: PointCloud2):
-        pts = ros_to_numpy(msg)
-        if pts.shape[0] == 0:
-            return
-
-        # Segment the drivable surface with RANSAC plane fitting.
-        ground_mask, plane = segment_ground(pts)
-        if plane is None:
-            self.get_logger().warn(
-                "no ground plane found; using fixed-height fallback",
-                throttle_duration_sec=5.0,
+    def _publish_field(self, frame, grid, values, valid):
+        """Publish one uniformly coloured CUBE_LIST per discovery-order band."""
+        array = MarkerArray()
+        # The leading DELETEALL is what retires cells that dropped out of the
+        # map this frame; without it a band left empty keeps its old cubes.
+        array.markers.append(delete_all(frame.frame_id, frame.stamp, MARKER_NS))
+        bands = normalised_bands(values, valid, self.field_bands)
+        for band in range(self.field_bands):
+            cells = np.argwhere(bands == band)
+            if cells.shape[0] == 0:
+                continue
+            array.markers.append(
+                cube_list(
+                    frame.frame_id,
+                    frame.stamp,
+                    MARKER_NS,
+                    band,
+                    grid.cell_to_world_xyz(cells),
+                    grid.resolution,
+                    band_color(band, self.field_bands),
+                    lifetime_sec=self.params.marker_lifetime_sec,
+                )
             )
-        road_pts = pts[ground_mask]
+        self.publisher.publish(array)
 
-        # Quantize into grid cells
-        grid = set()
-        for x, y, _ in road_pts:
-            gx = int(x // self.square_size)
-            gy = int(y // self.square_size)
-            grid.add((gx, gy))
-
-        if not grid:
+    def on_frame(self, frame):
+        """Walk the costmap depth-first, publish the order, audit against BFS."""
+        grid = frame.grid
+        if grid is None:
+            self._clear(frame)
             return
 
-        # Root = closest grid cell to LiDAR (0,0)
-        root = min(grid, key=lambda g: g[0] ** 2 + g[1] ** 2)
+        start = snap_to_traversable(grid, 0.0, 0.0, self.start_search_radius)
+        if start is None:
+            self.get_logger().warn(
+                "no traversable cell within "
+                f"{self.start_search_radius:.1f} m of the ego origin; not searching",
+                throttle_duration_sec=1.0,
+            )
+            self._clear(frame)
+            return
 
-        # DFS filter
-        connected = self.dfs_connected(grid, root)
+        order = dfs(grid, start, connectivity=self.connectivity)
+        visited = order >= 0
+        self._publish_field(frame, grid, order, visited)
+        self._log_equivalence(grid, start, visited)
 
-        # Build visualization marker
-        marker = Marker()
-        marker.header.frame_id = msg.header.frame_id
-        marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = "dfs_squares"
-        marker.id = 0
-        marker.type = Marker.CUBE_LIST
-        marker.action = Marker.ADD
+    def _log_equivalence(self, grid, start, visited):
+        """Log the DFS-vs-BFS visited-set comparison this node's claim rests on."""
+        reached = bfs(grid, start, connectivity=self.connectivity) >= 0
+        identical = bool(np.array_equal(visited, reached))
+        self.get_logger().info(
+            f"dfs visited={int(visited.sum())} bfs visited={int(reached.sum())} "
+            f"sets identical={identical}; dfs gives order only, no path and no cost",
+            throttle_duration_sec=1.0,
+        )
 
-        marker.scale.x = self.square_size
-        marker.scale.y = self.square_size
-        marker.scale.z = 0.05
-        marker.color.r = 0.0
-        marker.color.g = 0.5  # slightly darker green than BFS
-        marker.color.b = 1.0
-        marker.color.a = 0.6
 
-        for gx, gy in connected:
-            p = Point()
-            p.x = gx * self.square_size + self.half_size
-            p.y = gy * self.square_size + self.half_size
-            p.z = 0.0
-            marker.points.append(p)
-
-        self.pub.publish(marker)
+# The launch files and the end-to-end tests have referred to every node in this
+# package as RoadSquares since the first commit; the alias keeps that working.
+RoadSquares = DFSBaseline
 
 
 def main(args=None):
+    """Spin the DFS traversal-order baseline node."""
     rclpy.init(args=args)
-    node = RoadSquares()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    node = DFSBaseline()
+    try:
+        rclpy.spin(node)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":

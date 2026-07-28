@@ -36,7 +36,10 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ransac_seg.ground_plane import segment_ground  # noqa: E402
+from ransac_seg.ground_plane import (  # noqa: E402
+    DEFAULT_DISTANCE_THRESHOLD,
+    segment_ground,
+)
 from ransac_seg.plane_filter import PlaneFilter  # noqa: E402
 from ransac_seg.point_files import read_kitti_bin  # noqa: E402
 
@@ -240,14 +243,17 @@ def main():
     parser.add_argument(
         "--distance-threshold",
         type=float,
-        default=0.08,
-        help="RANSAC inlier band in metres (package default: 0.08)",
+        default=DEFAULT_DISTANCE_THRESHOLD,
+        help=(
+            "RANSAC inlier band in metres; follows the package default "
+            f"({DEFAULT_DISTANCE_THRESHOLD}) so this script cannot drift from it"
+        ),
     )
     parser.add_argument(
         "--max-range",
         type=float,
-        default=None,
-        help="range gate in metres, matching what the ROS nodes apply",
+        default=60.0,
+        help="range gate in metres; defaults to the nodes' own max_range",
     )
     args = parser.parse_args()
 

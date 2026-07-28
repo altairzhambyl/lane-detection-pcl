@@ -1,185 +1,158 @@
 #!/usr/bin/env python3
+"""
+Lane boundary node: publishes the fitted road edges and centreline.
+
+This node used to draw the grid squares as well, on the same topic, namespace
+and id as ransac_node.py — two publishers fighting over one namespace, so RViz
+showed whichever arrived last. Squares now belong to ransac_node alone and this
+node publishes only what it computes: the two boundaries and the centreline
+they were measured against, lifted onto the fitted plane instead of z=0.0.
+"""
+
 import numpy as np
 import rclpy
-from geometry_msgs.msg import Point
-from rclpy.duration import Duration
-from rclpy.node import Node
-from scipy.interpolate import UnivariateSpline
-from sensor_msgs.msg import PointCloud2
-from sensor_msgs_py import point_cloud2
 from visualization_msgs.msg import Marker
 
-from ransac_seg.ground_plane import segment_ground
+from ransac_seg import markers
+from ransac_seg.grid import plane_z
+from ransac_seg.lane import fit_lane
+from ransac_seg.params import declare
+from ransac_seg.perception_node import PerceptionNode
+
+_LEFT_NS = "road_left"
+_RIGHT_NS = "road_right"
+_CENTER_NS = "road_center"
+
+# ROS parameter name -> (fit_lane keyword, default, description). The defaults
+# are the function's own, so a launch file overriding nothing gets the tested
+# behaviour.
+_LANE_PARAMS = (
+    ("lane_bin_length", "bin_length", 2.0, "Arc length of one boundary sample bin"),
+    (
+        "lane_min_points_per_bin",
+        "min_points_per_bin",
+        8,
+        "Returns a bin needs before its edges are trusted",
+    ),
+    (
+        "lane_edge_percentile",
+        "edge_percentile",
+        2.0,
+        "Percentile taken as the road edge; tolerates that fraction of outliers",
+    ),
+    (
+        "lane_centerline_degree",
+        "centerline_degree",
+        2,
+        "Polynomial degree of the fitted centreline",
+    ),
+    (
+        "lane_robust_iterations",
+        "robust_iterations",
+        3,
+        "Median re-fit passes of the centreline",
+    ),
+    ("lane_max_gap", "max_gap", 6.0, "Boundaries are truncated at gaps this long"),
+    (
+        "lane_smoothing_per_point",
+        "smoothing_per_point",
+        0.02,
+        "Spline residual budget per occupied bin",
+    ),
+    ("lane_n_samples", "n_samples", 120, "Points published along each boundary"),
+    ("lane_min_width", "min_width", 2.0, "Fits narrower than this are rejected"),
+    ("lane_max_width", "max_width", 12.0, "Fits wider than this are rejected"),
+    (
+        "lane_min_bin_fill",
+        "min_bin_fill",
+        0.5,
+        "Bin population needed relative to the median, dropping partial end bins",
+    ),
+)
 
 
-def ros_to_numpy(msg):
-    """Convert ROS PointCloud2 to numpy array [N,3]."""
-    points = []
-    for p in point_cloud2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True):
-        points.append([p[0], p[1], p[2]])
-    return np.array(points)
+class LaneBoundaryNode(PerceptionNode):
+    """Fits and publishes the road boundaries and centreline for each frame."""
 
+    # Boundary fitting reads the ground returns directly; rasterising a costmap
+    # this node never consults would cost milliseconds per frame for nothing.
+    needs_costmap = False
 
-class RoadSquares(Node):
     def __init__(self):
-        super().__init__("road_squares_node")
-
-        # Subscribe to LiDAR raw topic
-        self.create_subscription(
-            PointCloud2, "/sensor/lidar_front/points", self.callback, 10
+        """Declare the lane fitting parameters and create the three publishers."""
+        super().__init__("lane_boundary_node")
+        self.lane_kwargs = {
+            keyword: type(default)(declare(self, name, default, description))
+            for name, keyword, default, description in _LANE_PARAMS
+        }
+        topics = (
+            ("left_topic", "/semantic_map/road_left", "Topic for the left boundary"),
+            ("right_topic", "/semantic_map/road_right", "Topic for the right boundary"),
+            ("center_topic", "/semantic_map/road_center", "Topic for the centreline"),
+        )
+        self.pub_left, self.pub_right, self.pub_center = (
+            self.create_publisher(
+                Marker,
+                declare(self, name, default, description),
+                self.params.qos_depth,
+            )
+            for name, default, description in topics
         )
 
-        # Publishers: squares + left/right curves
-        self.pub_squares = self.create_publisher(Marker, "/semantic_map/squares", 10)
-        self.pub_left = self.create_publisher(Marker, "/semantic_map/road_left", 10)
-        self.pub_right = self.create_publisher(Marker, "/semantic_map/road_right", 10)
+    def _strip(self, frame, publisher, namespace, xy, color):
+        """Publish one boundary as a LINE_STRIP lifted onto the fitted plane."""
+        points = np.asarray(xy, dtype=np.float64).reshape(-1, 2)
+        z = plane_z(frame.plane, points[:, 0], points[:, 1])
+        publisher.publish(
+            markers.line_strip(
+                frame.frame_id,
+                frame.stamp,
+                namespace,
+                0,
+                np.column_stack([points, np.broadcast_to(z, points[:, 0].shape)]),
+                color,
+                lifetime_sec=self.params.marker_lifetime_sec,
+            )
+        )
 
-    def callback(self, msg: PointCloud2):
-        pts = ros_to_numpy(msg)
-        if pts.shape[0] == 0:
-            return
-
-        # Segment the drivable surface with RANSAC plane fitting.
-        ground_mask, plane = segment_ground(pts)
-        if plane is None:
-            self.get_logger().warn(
-                "no ground plane found; using fixed-height fallback",
+    def on_frame(self, frame):
+        """Fit the lane for one frame and publish it, or clear it."""
+        fit = fit_lane(frame.ground_xyz, **self.lane_kwargs)
+        if not fit.valid:
+            self.get_logger().info(
+                f"no lane boundary published: {fit.reason}",
                 throttle_duration_sec=5.0,
             )
-        road_pts = pts[ground_mask]
-
-        if len(road_pts) < 30:
+            for publisher, namespace in (
+                (self.pub_left, _LEFT_NS),
+                (self.pub_right, _RIGHT_NS),
+                (self.pub_center, _CENTER_NS),
+            ):
+                publisher.publish(
+                    markers.delete_all(frame.frame_id, frame.stamp, namespace)
+                )
             return
 
-        # ------------------------
-        # GRID SQUARES
-        # ------------------------
-        square_size = 0.5
-        half_size = square_size / 2.0
-        grid = set()
-        for x, y, _ in road_pts:
-            gx = int(x // square_size)
-            gy = int(y // square_size)
-            grid.add((gx, gy))
+        self._strip(frame, self.pub_left, _LEFT_NS, fit.left, (0.0, 0.4, 1.0, 0.9))
+        self._strip(frame, self.pub_right, _RIGHT_NS, fit.right, (1.0, 0.2, 0.0, 0.9))
+        self._strip(
+            frame, self.pub_center, _CENTER_NS, fit.centerline, (1.0, 0.9, 0.0, 0.7)
+        )
 
-        squares = Marker()
-        squares.header.frame_id = msg.header.frame_id
-        squares.header.stamp = self.get_clock().now().to_msg()
-        squares.ns = "road_squares"
-        squares.id = 0
-        squares.type = Marker.CUBE_LIST
-        squares.action = Marker.ADD
-        squares.scale.x = square_size
-        squares.scale.y = square_size
-        squares.scale.z = 0.05
-        squares.color.r = 0.0
-        squares.color.g = 1.0
-        squares.color.b = 0.0
-        squares.color.a = 0.5
-        squares.lifetime = Duration(seconds=60).to_msg()
+    # test_nodes_end_to_end.py drives the subscription callback by its old
+    # name; the integrate step renames it there.
+    callback = PerceptionNode._on_cloud
 
-        for gx, gy in grid:
-            p = Point()
-            p.x = gx * square_size + half_size
-            p.y = gy * square_size + half_size
-            p.z = 0.0
-            squares.points.append(p)
 
-        self.pub_squares.publish(squares)
-
-        # ------------------------
-        # CURVE BOUNDARIES
-        # ------------------------
-        x = road_pts[:, 0]
-        y = road_pts[:, 1]
-
-        # group by x → left=min(y), right=max(y)
-        unique_x = np.unique(x.astype(int))
-        left_pts = []
-        right_pts = []
-        for xi in unique_x:
-            mask = x.astype(int) == xi
-            yy = y[mask]
-            if len(yy) > 0:
-                left_pts.append((xi, np.min(yy)))
-                right_pts.append((xi, np.max(yy)))
-
-        left_pts = np.array(left_pts)
-        right_pts = np.array(right_pts)
-
-        # sort by x
-        left_pts = left_pts[np.argsort(left_pts[:, 0])]
-        right_pts = right_pts[np.argsort(right_pts[:, 0])]
-
-        if len(left_pts) > 5 and len(right_pts) > 5:
-            xs_left = left_pts[:, 0]
-            ys_left = left_pts[:, 1]
-            xs_right = right_pts[:, 0]
-            ys_right = right_pts[:, 1]
-
-            spline_left = UnivariateSpline(xs_left, ys_left, s=5)
-            spline_right = UnivariateSpline(xs_right, ys_right, s=5)
-
-            xs = np.linspace(
-                min(xs_left.min(), xs_right.min()),
-                max(xs_left.max(), xs_right.max()),
-                200,
-            )
-
-            ys_left_smooth = spline_left(xs)
-            ys_right_smooth = spline_right(xs)
-
-            # left curve marker
-            left_marker = Marker()
-            left_marker.header.frame_id = msg.header.frame_id
-            left_marker.header.stamp = self.get_clock().now().to_msg()
-            left_marker.ns = "road_left"
-            left_marker.id = 1
-            left_marker.type = Marker.LINE_STRIP
-            left_marker.action = Marker.ADD
-            left_marker.scale.x = 0.1
-            left_marker.color.r = 0.0
-            left_marker.color.g = 0.0
-            left_marker.color.b = 1.0
-            left_marker.color.a = 0.8
-            left_marker.lifetime = Duration(seconds=60).to_msg()
-
-            for xi, yi in zip(xs, ys_left_smooth):
-                p = Point()
-                p.x = float(xi)
-                p.y = float(yi)
-                p.z = 0.0
-                left_marker.points.append(p)
-
-            # right curve marker
-            right_marker = Marker()
-            right_marker.header.frame_id = msg.header.frame_id
-            right_marker.header.stamp = self.get_clock().now().to_msg()
-            right_marker.ns = "road_right"
-            right_marker.id = 2
-            right_marker.type = Marker.LINE_STRIP
-            right_marker.action = Marker.ADD
-            right_marker.scale.x = 0.1
-            right_marker.color.r = 1.0
-            right_marker.color.g = 0.0
-            right_marker.color.b = 0.0
-            right_marker.color.a = 0.8
-            right_marker.lifetime = Duration(seconds=60).to_msg()
-
-            for xi, yi in zip(xs, ys_right_smooth):
-                p = Point()
-                p.x = float(xi)
-                p.y = float(yi)
-                p.z = 0.0
-                right_marker.points.append(p)
-
-            self.pub_left.publish(left_marker)
-            self.pub_right.publish(right_marker)
+# The setup.py entry point and the end-to-end tests still reference the old
+# class name. Kept until the integrate step updates both.
+RoadSquares = LaneBoundaryNode
 
 
 def main(args=None):
+    """Spin the lane boundary node."""
     rclpy.init(args=args)
-    node = RoadSquares()
+    node = LaneBoundaryNode()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()

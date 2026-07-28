@@ -54,7 +54,11 @@ DEFAULTS = {
     "min_range": (0.5, "Drop returns closer than this; rejects the sensor's own mount"),
     "max_range": (60.0, "Drop returns beyond this range in metres"),
     "marker_lifetime_sec": (0.0, "Marker lifetime in seconds; 0 means never expire"),
-    "distance_threshold": (0.08, "RANSAC inlier band around the plane in metres"),
+    "distance_threshold": (
+        0.20,
+        "RANSAC inlier band around the plane in metres; 0.20 was chosen on "
+        "SemanticKITTI 00 and 05, not on synthetic data",
+    ),
     "max_iterations": (200, "Upper bound on RANSAC hypotheses per frame"),
     "min_iterations": (
         12,

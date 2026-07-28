@@ -34,7 +34,12 @@ from ransac_seg.grid import build_costmap, snap_to_traversable  # noqa: E402
 from ransac_seg.ground_plane import segment_ground  # noqa: E402
 from ransac_seg.lane import fit_lane  # noqa: E402
 from ransac_seg.plane_filter import PlaneFilter  # noqa: E402
-from ransac_seg.planners import astar, select_goal  # noqa: E402
+from ransac_seg.planners import (  # noqa: E402
+    astar,
+    dijkstra,
+    furthest_reachable,
+    select_goal,
+)
 from rclpy.serialization import deserialize_message  # noqa: E402
 from sensor_msgs.msg import PointCloud2  # noqa: E402
 
@@ -68,6 +73,28 @@ class Timer:
         return out
 
 
+def plan_like_the_node(grid, start, goal_xy=(25.0, 0.0), axis=(1.0, 0.0)):
+    """
+    Reproduce AStarPlanner._plan: the requested goal, else the furthest reachable.
+
+    Calling astar() alone under-reports what the pipeline does. On a real drive
+    the requested goal is frequently off the track or behind a barrier, and the
+    node answers that with a Dijkstra field and a route to the furthest cell
+    provably connected to the start rather than by publishing nothing.
+    """
+    goal = select_goal(grid, goal_xy, search_radius=5.0, fallback_axis=axis)
+    if goal is not None:
+        path, _ = astar(grid, start, goal)
+        if path:
+            return path, "goal"
+    cost, _ = dijkstra(grid, start)
+    fallback = furthest_reachable(cost, grid, axis)
+    if fallback is None or fallback == start:
+        return [], "none"
+    path, _ = astar(grid, start, fallback)
+    return path, "fallback" if path else "none"
+
+
 def read_frames(bag_uri, topic, limit, storage_id="mcap"):
     """Yield deserialised PointCloud2 messages from ``bag_uri``."""
     reader = rosbag2_py.SequentialReader()
@@ -96,7 +123,8 @@ def main():
     timer = Timer()
     plane_filter = PlaneFilter()
     point_counts, gated_counts, cluster_counts, planned = [], [], [], 0
-    frames = 0
+    frames = no_start = 0
+    routes = defaultdict(int)
 
     for msg in read_frames(args.bag_uri, args.topic, args.frames, args.storage_id):
         points = timer.time("decode", pointcloud2_to_xyz, msg)
@@ -123,11 +151,12 @@ def main():
         timer.time("lane", fit_lane, ground)
 
         start = snap_to_traversable(grid, 0.0, 0.0, 2.0)
-        if start is not None:
-            goal = select_goal(grid, (25.0, 0.0))
-            if goal is not None:
-                path, _ = timer.time("plan_astar", astar, grid, start, goal)
-                planned += bool(path)
+        if start is None:
+            no_start += 1
+        else:
+            path, how = timer.time("plan", plan_like_the_node, grid, start)
+            planned += bool(path)
+            routes[how] += 1
         frames += 1
 
     if not frames:
@@ -145,11 +174,15 @@ def main():
         f"{int(np.median(gated_counts))} after the {args.max_range:.0f} m range gate"
     )
     print(f"clusters/frame: {np.median(cluster_counts):.1f} median")
-    print(f"route found   : {planned}/{frames} frames\n")
+    print(
+        f"route found   : {planned}/{frames} frames "
+        f"({routes['goal']} to the requested goal, {routes['fallback']} via fallback)"
+    )
+    print(f"no start cell : {no_start}/{frames} frames\n")
 
     print(f"{'stage':<12} {'p50 ms':>8} {'p95 ms':>8} {'p99 ms':>8} {'max ms':>8}")
     print("-" * 46)
-    for name in ("decode", "segment", "cluster", "costmap", "lane", "plan_astar"):
+    for name in ("decode", "segment", "cluster", "costmap", "lane", "plan"):
         if name not in report:
             continue
         s = report[name]

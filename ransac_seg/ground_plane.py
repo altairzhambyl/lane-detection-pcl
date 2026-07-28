@@ -23,7 +23,7 @@ from dataclasses import dataclass
 import numpy as np
 
 # Defaults tuned for a front-facing automotive LiDAR, distances in metres.
-DEFAULT_DISTANCE_THRESHOLD = 0.08
+DEFAULT_DISTANCE_THRESHOLD = 0.20
 DEFAULT_MAX_ITERATIONS = 200
 DEFAULT_MIN_ITERATIONS = 12
 DEFAULT_CONFIDENCE = 0.99

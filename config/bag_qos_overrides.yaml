@@ -1,0 +1,10 @@
+# ros2 bag play republishes /tf_static as VOLATILE, but every correct subscriber
+# (RViz, foxglove_bridge, tf2) asks for TRANSIENT_LOCAL, because a static
+# transform is published once and must still reach whoever connects later.
+# The player logs "requesting incompatible QoS. No messages will be sent to it"
+# and drops it silently, so the whole TF tree is missing and nothing published
+# in the sensor frame can be placed by a viewer.
+/tf_static:
+  durability: transient_local
+  history: keep_all
+  reliability: reliable

@@ -1,0 +1,33 @@
+name: CI
+
+# The suite includes the package's own ament flake8/pep257 linters, so this is
+# both the test run and the style gate. It runs inside the ROS container because
+# ament_flake8/ament_pep257 are distributed as ROS packages, not reliable PyPI
+# ones, and pip-installing them drifts from what a real Humble machine has.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    container: ros:humble
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install test dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            python3-pytest \
+            python3-numpy \
+            python3-scipy \
+            ros-humble-ament-flake8 \
+            ros-humble-ament-pep257 \
+            ros-humble-ament-copyright \
+            ros-humble-sensor-msgs-py \
+            ros-humble-rosbag2-py
+
+      - name: Run the suite
+        run: bash -c "source /opt/ros/humble/setup.bash && python3 -m pytest test/ -q"

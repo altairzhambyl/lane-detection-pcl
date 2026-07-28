@@ -13,15 +13,36 @@
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>sensor_msgs_py</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-scipy</exec_depend>
 
+  <!-- params.py builds ParameterDescriptor; markers.py stamps Duration. Both
+       arrive transitively today, which is exactly why they need declaring:
+       a transitive dep that disappears breaks every node at import time. -->
+  <exec_depend>rcl_interfaces</exec_depend>
+  <exec_depend>builtin_interfaces</exec_depend>
+
+  <!-- launch/algorithms.launch.py imports both; without these the documented
+       `rosdep install` does not cover the documented `ros2 launch` step. -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <!-- tools/foxglove_demo.py writes bags and tools/replay_bag.py reads them. -->
+  <exec_depend>rosbag2_py</exec_depend>
+
+  <!-- Only tools/foxglove_demo.py's preview render needs it, and only on the
+       --preview path, so it is imported inside the function rather than at
+       module scope; declaring it keeps `rosdep install` honest anyway. -->
+  <exec_depend>python3-matplotlib</exec_depend>
+
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
   <test_depend>python3-pytest</test_depend>
+  <test_depend>std_msgs</test_depend>
 
   <export>
     <build_type>ament_python</build_type>

@@ -27,5 +27,9 @@ Thumbs.db
 .env
 *.bag
 
+# Agent working directory: holds prompt history and local tool settings, and
+# this repo is public — one `git add -A` would publish the lot.
+.claude/
+
 # Generated Foxglove demo recording (rebuild: python3 tools/foxglove_demo.py)
 docs/ransac_demo/

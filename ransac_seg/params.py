@@ -65,7 +65,8 @@ DEFAULTS = {
         "Hypotheses always drawn before the adaptive budget applies",
     ),
     "confidence": (0.99, "Target probability of drawing one all-inlier sample"),
-    "max_tilt_deg": (25.0, "Reject planes tilted further than this from +z"),
+    "max_tilt_deg": (
+        10.0, "Reject planes tilted further than this from +z"),
     "min_inlier_ratio": (
         0.15,
         "Below this inlier fraction the fit is treated as failed",

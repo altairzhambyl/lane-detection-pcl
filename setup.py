@@ -27,10 +27,10 @@ setup(
     entry_points={
         "console_scripts": [
             "astar = ransac_seg.astar:main",
-            "dfs = ransac_seg.dfs:main",
             "bfs = ransac_seg.bfs:main",
             "curve = ransac_seg.curve:main",
-            "djikstra = ransac_seg.djikstra:main",
+            "dfs = ransac_seg.dfs:main",
+            "dijkstra = ransac_seg.dijkstra:main",
             "ransac_node = ransac_seg.ransac_node:main",
         ],
     },

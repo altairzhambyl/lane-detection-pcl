@@ -220,6 +220,33 @@ python3 tools/bench_rosbag.py path/to/recording.mcap --frames 300
 There are no accuracy numbers for this recording. It carries no ground-truth
 labels, so any correctness figure quoted from it would be invented.
 
+### One frame of that recording
+
+![Pipeline on recorded LiDAR](docs/screenshots/real_frame.png)
+
+Left: the ground/non-ground split from `segment_ground` with the cluster boxes
+drawn on top. Right: the tri-state cost grid the planners search, and the A\*
+route across it. Nothing here is illustrative — every point, cell and line is
+what the modules returned for that sweep. Regenerate any frame with:
+
+```bash
+python3 tools/render_frame.py path/to/recording.mcap --frame 60
+```
+
+The same frames live in Foxglove, driven by `ros2 bag play` into the real nodes:
+
+![Pipeline live in Foxglove](docs/screenshots/foxglove_real_pipeline.png)
+
+Point cloud, the green drivable grid, red obstacle-cluster boxes along the
+barriers, and the front camera for reference.
+
+Two things this figure shows that the numbers do not. The barrier returns along
+both edges are clustered and inflated correctly, but a wide band of the surface
+past `y < -10` is still classed non-ground — one global plane cannot hold a
+cambered track, which is the same limitation that caps KITTI IoU at 0.808. And
+the lane fit publishes nothing on this recording: the track is wider than
+`lane_max_width`, so the fit is rejected rather than reported wrong.
+
 ---
 
 ## Key Features
@@ -463,6 +490,13 @@ python3 tools/kitti_publisher.py /path/to/velodyne/ --rate 10
 
 # any rosbag2 recording holding a PointCloud2 topic
 python3 tools/replay_bag.py /path/to/bag --in-topic /lidar/points --rate 1.0
+
+# Or play the whole recording — every topic, with TF — through the real nodes.
+# The QoS override is not optional: without it ros2 bag play republishes
+# /tf_static as VOLATILE, no correct subscriber receives it, and RViz/Foxglove
+# render nothing that lives in a sensor frame.
+ros2 bag play /path/to/recording.mcap --loop \
+    --qos-profile-overrides-path config/bag_qos_overrides.yaml
 ```
 
 `ransac_seg/point_files.py` resolves PCD fields by **name**, so a file declaring
@@ -582,6 +616,10 @@ past ~9 m sits above `z = 0.2` and is discarded as obstacle.*
 - `distance_threshold` is 0.20 m because that won on KITTI sequences 00 and 05. It is a property of
   that sensor and that ground; a different LiDAR will want a different band, and there is no
   auto-tuning
+- **Replaying a bag needs a QoS override for `/tf_static`.** `ros2 bag play` republishes it as
+  VOLATILE while every correct subscriber asks for TRANSIENT_LOCAL, so the player drops it with
+  a one-line warning and a viewer silently renders nothing that lives in a sensor frame. Pass
+  `--qos-profile-overrides-path config/bag_qos_overrides.yaml`
 - No ego-motion or odometry input, so the cost grid is **single-frame**: it is rebuilt from scratch
   on each sweep and nothing is accumulated or tracked between them
 - Planning is a search over an inflated occupancy cost grid built from ground and non-ground

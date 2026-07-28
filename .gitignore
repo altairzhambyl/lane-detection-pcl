@@ -26,3 +26,6 @@ Thumbs.db
 # Environment
 .env
 *.bag
+
+# Generated Foxglove demo recording (rebuild: python3 tools/foxglove_demo.py)
+docs/ransac_demo/

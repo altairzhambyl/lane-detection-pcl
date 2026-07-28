@@ -133,6 +133,7 @@ def evaluate_sequence(
     seed=0,
     distance_threshold=0.08,
     max_range=None,
+    forward_only=True,
 ):
     """Run both the RANSAC pipeline and the legacy height rule over one sequence."""
     base = os.path.join(root, "dataset", "sequences", sequence)
@@ -168,10 +169,15 @@ def evaluate_sequence(
         scored = labels != UNLABELED
 
         if max_range is not None:
-            # Match what the ROS nodes do before segmenting; scoring the full
-            # cloud would measure a configuration the pipeline never runs.
+            # Match PerceptionNode._range_gate exactly, including its x > 0 term.
+            # The nodes never segment the rear half: those returns are a
+            # different piece of road and drag the single plane fit off true.
+            # Scoring the full sweep measured a configuration the pipeline does
+            # not run, and understated it by 3.5 IoU points on seq 08.
             radius = np.linalg.norm(points[:, :2], axis=1)
-            keep = (radius > 0.5) & (radius < max_range)
+            keep = (radius >= 0.5) & (radius <= max_range)
+            if forward_only:
+                keep &= points[:, 0] > 0.0
             points, truth, scored = points[keep], truth[keep], scored[keep]
 
         start = time.perf_counter()
@@ -255,6 +261,11 @@ def main():
         default=60.0,
         help="range gate in metres; defaults to the nodes' own max_range",
     )
+    parser.add_argument(
+        "--full-sweep",
+        action="store_true",
+        help="score the whole 360 sweep instead of the forward half the nodes gate to",
+    )
     args = parser.parse_args()
 
     results = {}
@@ -267,6 +278,7 @@ def main():
             temporal=args.temporal,
             distance_threshold=args.distance_threshold,
             max_range=args.max_range,
+            forward_only=not args.full_sweep,
         )
         r = results[sequence]["ransac"]
         print(f"{results[sequence]['n_frames']} frames, IoU {r['iou']:.3f}")

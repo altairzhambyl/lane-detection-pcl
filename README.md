@@ -246,10 +246,19 @@ python3 tools/render_frame.py path/to/recording.mcap --frame 60
 
 The same frames live in Foxglove, driven by `ros2 bag play` into the real nodes:
 
-![Pipeline live in Foxglove](docs/screenshots/foxglove_real_pipeline.png)
+![Raw sweep in Foxglove](docs/screenshots/foxglove_pointcloud.png)
 
-Point cloud, the green drivable grid, red obstacle-cluster boxes along the
-barriers, and the front camera for reference.
+The raw sweep alone, coloured by height. The concentric rings are why free-space
+carving exists: the gaps between them hold no return, so a cell-per-return
+costmap marks them unobserved and the planner cannot cross. The dark disc at the
+sensor is the minimum-range blind spot, which the same carving fills.
+
+![Pipeline live in Foxglove](docs/screenshots/foxglove_ransac.png)
+
+The same scene with the pipeline's output on top: the green drivable grid over
+the segmented surface, red cluster boxes on the barriers either side, and the
+front camera for reference. The grid is opaque, so it hides the cloud beneath
+it — the two views above are the same frame, not two different ones.
 
 Two things this figure shows that the numbers do not. The barrier returns along
 both edges are clustered and inflated correctly, but a wide band of the surface

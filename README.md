@@ -267,6 +267,29 @@ Scrub the timeline: as the slope steepens the RANSAC plane tracks it, while the
 fixed threshold progressively misclassifies the road as obstacle. Averaged over
 the 60 frames — **RANSAC 1.000 recall / 1.000 precision, legacy 0.418 / 0.850**.
 
+### Live in Foxglove (no LiDAR either)
+
+Streams the same scene into the real nodes instead of a file, so
+`ransac_node` / `curve` run unmodified and publish their markers live:
+
+```bash
+ros2 launch foxglove_bridge foxglove_bridge_launch.xml   # shell 1
+python3 tools/demo_publisher.py                          # shell 2
+python3 -m ransac_seg.ransac_node                        # shell 3
+python3 -m ransac_seg.curve                              # shell 4
+```
+
+Connect Foxglove to `ws://localhost:8765` (Open Connection → Foxglove
+WebSocket), or open the deep link directly:
+
+```bash
+xdg-open 'foxglove://open?ds=foxglove-websocket&ds.url=ws%3A%2F%2Flocalhost%3A8765'
+```
+
+Sweeps publish at ~6 Hz rather than the requested 10 — the bottleneck is the
+per-point Python `struct.pack` in the demo publisher (~14k points/frame), not
+the segmentation, which takes ~18 ms.
+
 ![RANSAC vs fixed threshold](docs/screenshots/ransac_vs_threshold.png)
 
 *Side view at 12° slope. Top: RANSAC follows the surface. Bottom: everything

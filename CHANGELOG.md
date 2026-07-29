@@ -1,5 +1,61 @@
 # Changelog
 
+## 2026-07-29 — C++ pipeline, and the third measurement defect of the week
+
+**Situation**
+- Two benchmarks of the same function disagreed by 3x: the new `bench_pipeline` reported
+  segmentation at p50 2.86 ms, `bench_ground` at 8.47 ms, on the same frames with the same flags.
+
+**Options**
+1. Quote the faster number and move on.
+2. Assume the new C++ benchmark was cheating and constrain it to match the old one.
+3. Find out which of the two matches the shipping pipeline.
+
+**Decisions**
+- Took option 3, and the answer inverted the suspicion. `bench_pipeline` gates on
+  `x > 0` because `PerceptionNode._range_gate` does, with a documented reason: rear
+  returns are a different piece of road and drag the single plane fit off true. The
+  benchmarks that did NOT match the nodes were mine — `bench_ground` and
+  `tools/eval_semantickitti.py`, both of which scored the full 360 sweep.
+- `eval_semantickitti.py` now replicates the node's gate; `--full-sweep` keeps the old
+  behaviour available for comparison. Every KITTI figure is re-measured under it.
+
+**Reasoning**
+- A benchmark that scores a configuration the pipeline never runs is not measuring the
+  pipeline. This one was also *pessimistic*, which is why it survived: an understated
+  number does not look like a defect.
+
+**Outcomes** — all 11 sequences, 23 201 frames, gated as the nodes gate
+- thr 0.20: **IoU 0.838**, precision 0.912, recall 0.911, p95 **22.5 ms**, 84 frames with
+  no plane. Previously published under the wrong gate: 0.808 / 0.902 / 0.886 / 29.2 ms.
+- thr 0.08, the old default, re-measured under the same gate: **IoU 0.693**, 568 frames
+  with no plane.
+- Oracle fixed-height baseline: **0.817**. So at the old band RANSAC *lost* to a tuned
+  threshold (0.693 vs 0.817) and at the new one it wins by 2.1 points, on 9 of 11
+  sequences. It still loses on 06 and 10.
+- C++ pipeline: 11 839 lines, 169 gtests, zero warnings under -Wall -Wextra -Wpedantic.
+  End to end on seq 08 **p50 26.6 ms**; shared perception hub **8.02 ms** against
+  **35.1 ms** for the six-copy topology the Python launch file uses.
+- Python suite unchanged: 176 passed, 1 skipped.
+
+**Lessons**
+- Three times this week two measurements of one quantity disagreed, and all three times
+  the disagreement was the finding, not a configuration puzzle: first-N-frames sampling,
+  two defaults for one parameter, and now a range gate that differed from the nodes'.
+  The reflex worth keeping is to treat any unexplained factor-of-N as a defect report.
+- The suspicion was pointed the wrong way this time. Checking which side matched the
+  shipping code, rather than which side looked more plausible, is what settled it.
+
+**Next-step assumptions**
+- Ego-motion is next. `/tf` in the recording already carries `map -> base_link` at ~62 Hz
+  from the vehicle's GNSS/IMU, so costmap accumulation can start immediately and an ICP
+  implementation gets a reference to be scored against rather than trusted.
+- Boundary geometry, not planning, is the project's actual deliverable. Accumulation must
+  therefore preserve edges rather than average cells; barrier-wall thickness in the
+  accumulated map is the metric being proposed for that.
+- The recording is a single lap that never closes, so lap-to-lap repeatability is not
+  available as an accuracy check on this data.
+
 ## 2026-07-28 (later) — Sampling correction: the rosbag figures were measured on the pit lane
 
 **Situation**

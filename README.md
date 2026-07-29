@@ -168,20 +168,28 @@ labelled `unlabeled` are excluded from scoring rather than counted as negatives.
 
 | Configuration | IoU | precision | recall | p95 latency | frames with no plane |
 |---|---|---|---|---|---|
-| `distance_threshold` 0.08 — the old default | 0.620 | 0.881 | 0.676 | 34.8 ms | 1046 / 23 201 |
-| `distance_threshold` 0.20 — current default | **0.808** | 0.902 | 0.886 | 29.2 ms | 0 |
-| Best fixed height cut, tuned on the test set | 0.797 | — | 0.922 | — | — |
+| `distance_threshold` 0.08 — the old default | 0.693 | 0.931 | 0.731 | 35.6 ms | 568 / 23 201 |
+| `distance_threshold` 0.20 — current default | **0.838** | 0.912 | 0.911 | 22.5 ms | 84 / 23 201 |
+| Best fixed height cut, tuned on the test set | 0.817 | — | 0.928 | — | — |
+
+Both rows are gated exactly as `PerceptionNode._range_gate` gates: range bounds
+**and** `x > 0`. The nodes never segment the rear half — those returns are a
+different piece of road and drag the single plane fit off true — so scoring the
+full 360° sweep measured a configuration the pipeline does not run. It also
+understated it: the same frames score 0.790 gated on range alone and 0.825 gated
+as the node does.
 
 The baseline is deliberately generous: the fixed-height cut is scored at every
 threshold from −2.10 m to −0.80 m and reported at whichever one wins **on the
 test data itself**. No deployed system gets that. RANSAC at the tuned band beats
-it by 1.1 points overall and on 7 of the 11 sequences — so the honest claim is
-*on par with an oracle threshold*, not *far better than a threshold*.
+it by 2.1 points and on 9 of the 11 sequences; at the old band it *lost* to it,
+0.693 against 0.817. It still loses on sequences 06 and 10, where the ground is
+least like one plane.
 
 The 0.08 → 0.20 change is the headline result, and it was a bug in this repo,
 not a tuning knob. 0.08 m was chosen against synthetic clouds carrying 1 cm of
 noise. Real Velodyne ground is spread far wider by camber, kerbs and gravel, so
-the band was too tight to contain it: recall lost 21 points, and on 1046 frames
+the band was too tight to contain it: recall lost 18 points, and on 568 frames
 the fit failed outright and fell back to a fixed height. The replacement value
 was chosen on sequences **00 and 05 only**, then reported on all eleven.
 

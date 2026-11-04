@@ -195,7 +195,7 @@ was chosen on sequences **00 and 05 only**, then reported on all eleven.
 
 ```bash
 # Defaults follow the package's own distance_threshold and max_range, so this
-# reproduces the 0.808 row. Pass --distance-threshold 0.08 for the 0.620 row.
+# reproduces the 0.838 row. Pass --distance-threshold 0.08 for the 0.693 row.
 python3 tools/eval_semantickitti.py --root ~/datasets/semantickitti \
     --sequences 00 01 02 03 04 05 06 07 08 09 10
 ```
@@ -271,7 +271,7 @@ it — the two views above are the same frame, not two different ones.
 Two things this figure shows that the numbers do not. The barrier returns along
 both edges are clustered and inflated correctly, but a wide band of the surface
 past `y < -10` is still classed non-ground — one global plane cannot hold a
-cambered track, which is the same limitation that caps KITTI IoU at 0.808. And
+cambered track, which is the same limitation that caps KITTI IoU at 0.838. And
 the lane fit publishes nothing on this recording: the track is wider than
 `lane_max_width`, so the fit is rejected rather than reported wrong.
 
@@ -639,7 +639,7 @@ past ~9 m sits above `z = 0.2` and is discarded as obstacle.*
   carved drivable. Only positive obstacles — anything that produces a return — block a cell
 - **Segmentation is one global plane.** On KITTI the ground classes include `sidewalk` and
   `terrain`, which are not coplanar with the road; the fit underfits them by construction, which is
-  most of the gap between 0.808 IoU and 1.0. Sector-wise fitting (Patchwork-style) is the fix and is
+  most of the gap between 0.838 IoU and 1.0. Sector-wise fitting (Patchwork-style) is the fix and is
   not written
 - `distance_threshold` is 0.20 m because that won on KITTI sequences 00 and 05. It is a property of
   that sensor and that ground; a different LiDAR will want a different band, and there is no
